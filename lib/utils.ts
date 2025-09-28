@@ -1,7 +1,5 @@
-/* eslint-disable prefer-const */
-/* eslint-disable no-prototype-builtins */
 import { type ClassValue, clsx } from "clsx";
-import qs from "qs";
+import qs from 'qs';
 import { twMerge } from "tailwind-merge";
 
 import { aspectRatioOptions } from "@/constants";
@@ -42,10 +40,49 @@ const shimmer = (w: number, h: number) => `
   <animate xlink:href="#r" attributeName="x" from="-${w}" to="${w}" dur="1s" repeatCount="indefinite"  />
 </svg>`;
 
-const toBase64 = (str: string) =>
-    typeof window === "undefined"
-        ? Buffer.from(str).toString("base64")
-        : window.btoa(str);
+type BufferShim = { from: (input: string) => { toString: (enc: string) => string } };
+
+const toBase64 = (str: string) => {
+    if (typeof window !== "undefined") return window.btoa(str);
+    const g = globalThis as { Buffer?: BufferShim };
+    return g.Buffer?.from(str).toString("base64") ?? BufferFromStringFallback(str);
+};
+
+// Fallback for environments without Node Buffer types
+function BufferFromStringFallback(str: string): string {
+    // Basic UTF-8 to base64 encoding fallback
+    if (typeof btoa === "function") return btoa(str);
+    // Minimal polyfill
+    const utf8 = new TextEncoder().encode(str);
+    let binary = "";
+    utf8.forEach((b) => (binary += String.fromCharCode(b)));
+
+    return typeof btoa === "function" ? btoa(binary) : BufferLike(binary);
+}
+
+function BufferLike(binary: string): string {
+    // Very small base64 encoder for last-resort fallback
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let output = "";
+    let i = 0;
+    while (i < binary.length) {
+        const c1 = binary.charCodeAt(i++);
+        const c2 = binary.charCodeAt(i++);
+        const c3 = binary.charCodeAt(i++);
+
+        const e1 = c1 >> 2;
+        const e2 = ((c1 & 3) << 4) | (c2 >> 4);
+        const e3 = isNaN(c2) ? 64 : ((c2 & 15) << 2) | (c3 >> 6);
+        const e4 = isNaN(c2) || isNaN(c3) ? 64 : c3 & 63;
+
+        output +=
+            chars.charAt(e1) +
+            chars.charAt(e2) +
+            chars.charAt(e3) +
+            chars.charAt(e4);
+    }
+    return output;
+}
 
 export const dataUrl = `data:image/svg+xml;base64,${toBase64(
     shimmer(1000, 1000)
@@ -85,11 +122,11 @@ export function removeKeysFromQuery({
 }
 
 // DEBOUNCE
-export const debounce = (func: (...args: any[]) => void, delay: number) => {
-    let timeoutId: NodeJS.Timeout | null;
-    return (...args: any[]) => {
-        if (timeoutId) clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => func.apply(null, args), delay);
+export const debounce = (func: (...args: unknown[]) => void, delay: number) => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    return (...args: unknown[]) => {
+        if (timeoutId !== null) clearTimeout(timeoutId as unknown as number);
+        timeoutId = setTimeout(() => func(...args), delay);
     };
 };
 
@@ -97,7 +134,7 @@ export const debounce = (func: (...args: any[]) => void, delay: number) => {
 export type AspectRatioKey = keyof typeof aspectRatioOptions;
 export const getImageSize = (
     type: string,
-    image: any,
+    image: { width?: number; height?: number; aspectRatio?: string },
     dimension: "width" | "height"
 ): number => {
     if (type === "fill") {
@@ -131,27 +168,35 @@ export const download = (url: string, filename: string) => {
 };
 
 // DEEP MERGE OBJECTS
-export const deepMergeObjects = (obj1: any, obj2: any) => {
-    if(obj2 === null || obj2 === undefined) {
-        return obj1;
+export const deepMergeObjects = <T extends Record<string, unknown>, U extends Record<string, unknown>>(
+    obj1: T,
+    obj2: U | null | undefined
+): T & U => {
+    if (obj2 === null || obj2 === undefined) {
+        return obj1 as T & U;
     }
 
-    let output = { ...obj2 };
+    const output: Record<string, unknown> = { ...obj2 };
 
-    for (let key in obj1) {
-        if (obj1.hasOwnProperty(key)) {
+    for (const key in obj1) {
+        if (Object.prototype.hasOwnProperty.call(obj1, key)) {
+            const v1 = obj1[key as keyof T] as unknown;
+            const v2 = (obj2 as Record<string, unknown>)[key];
             if (
-                obj1[key] &&
-                typeof obj1[key] === "object" &&
-                obj2[key] &&
-                typeof obj2[key] === "object"
+                v1 &&
+                typeof v1 === "object" &&
+                v2 &&
+                typeof v2 === "object"
             ) {
-                output[key] = deepMergeObjects(obj1[key], obj2[key]);
+                output[key] = deepMergeObjects(
+                    v1 as Record<string, unknown>,
+                    v2 as Record<string, unknown>
+                );
             } else {
-                output[key] = obj1[key];
+                output[key] = v1 as unknown;
             }
         }
     }
 
-    return output;
+    return output as T & U;
 };
